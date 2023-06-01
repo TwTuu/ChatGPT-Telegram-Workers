@@ -1,5 +1,10 @@
-import {CONST, DATABASE} from './env.js';
+import {CONST, DATABASE, ENV} from './env.js';
+import {gpt3TokensCounter} from './gpt3.js';
 
+/**
+ * @param {number} length
+ * @return {string}
+ */
 export function randomString(length) {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let result = '';
@@ -7,19 +12,9 @@ export function randomString(length) {
   return result;
 }
 
-export function calculateTokens(text) {
-  const words = text.split(' ');
-  let tokenCount = 0;
-  for (const word of words) {
-    if (/^[a-zA-Z]+$/.test(word)) {
-      tokenCount += 0.75;
-    } else {
-      tokenCount += Array.from(word).length;
-    }
-  }
-  return Math.floor(tokenCount);
-}
-
+/**
+ * @return {Promise<string>}
+ */
 export async function historyPassword() {
   let password = await DATABASE.get(CONST.PASSWORD_KEY);
   if (password === null) {
@@ -30,6 +25,10 @@ export async function historyPassword() {
 }
 
 
+/**
+ * @param {string} body
+ * @return {string}
+ */
 export function renderHTML(body) {
   return `
 <html>  
@@ -76,4 +75,89 @@ export function renderHTML(body) {
   </body>
 </html>
   `;
+}
+
+/**
+ *
+ * @param {Error} e
+ * @return {string}
+ */
+export function errorToString(e) {
+  return JSON.stringify({
+    message: e.message,
+    stack: e.stack,
+  });
+}
+
+
+/**
+ * @param {object} config
+ * @param {string} key
+ * @param {any} value
+ * @param {object} types
+ */
+export function mergeConfig(config, key, value, types) {
+  const type = (types && types[key]) || typeof config[key];
+  switch (type) {
+    case 'number':
+      config[key] = Number(value);
+      break;
+    case 'boolean':
+      config[key] = value === 'true';
+      break;
+    case 'string':
+      config[key] = value;
+      break;
+    case 'object':
+      const object = JSON.parse(value);
+      if (typeof object === 'object') {
+        config[key] = object;
+        break;
+      }
+      throw new Error(ENV.I18N.utils.not_supported_configuration);
+    default:
+      throw new Error(ENV.I18N.utils.not_supported_configuration);
+  }
+}
+
+/**
+ * @return {Promise<(function(string): number)>}
+ */
+export async function tokensCounter() {
+  let counter = (text) => Array.from(text).length;
+  try {
+    if (ENV.GPT3_TOKENS_COUNT) {
+      counter = await gpt3TokensCounter();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  return (text) => {
+    try {
+      return counter(text);
+    } catch (e) {
+      console.error(e);
+      return Array.from(text).length;
+    }
+  };
+}
+
+/**
+ *
+ * @param {Response} resp
+ * @return {Response}
+ */
+export function makeResponse200(resp) {
+  if (resp === null) {
+    return new Response('NOT HANDLED', {status: 200});
+  }
+  if (resp.status === 200) {
+    return resp;
+  } else {
+    // 如果返回4xx，5xx，Telegram会重试这个消息，后续消息就不会到达，所有webhook的错误都返回200
+    return new Response(resp.body, {status: 200, headers: {
+      'Original-Status': resp.status,
+      ...resp.headers,
+    }});
+  }
 }

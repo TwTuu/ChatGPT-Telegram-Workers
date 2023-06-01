@@ -1,59 +1,188 @@
-import {DATABASE} from './env.js';
-import {CURRENT_CHAT_CONTEXT, SHARE_CONTEXT} from './context.js';
+// eslint-disable-next-line no-unused-vars
+import {Context} from './context.js';
+import {DATABASE, ENV} from './env.js';
 
-// 发送消息到Telegram
-export async function sendMessageToTelegram(message, token, context) {
-  const resp = await fetch(
-      `https://api.telegram.org/bot${token || SHARE_CONTEXT.currentBotToken}/sendMessage`,
+/**
+ *
+ * @param {string} message
+ * @param {string} token
+ * @param {object} context
+ * @return {Promise<Response>}
+ */
+async function sendMessage(message, token, context) {
+  const body = {
+    text: message,
+  };
+  for (const key of Object.keys(context)) {
+    if (context[key] !== undefined && context[key] !== null) {
+      body[key] = context[key];
+    }
+  }
+  let method = 'sendMessage';
+  if (context?.message_id) {
+    method = 'editMessageText';
+  }
+  return await fetch(
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/${method}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          ...(context || CURRENT_CHAT_CONTEXT),
-          text: message,
-        }),
+        body: JSON.stringify(body),
       },
   );
-  const json = await resp.json();
-  if (!resp.ok) {
-    return sendMessageToTelegramFallback(json, message, token, context);
-  }
-  return new Response(JSON.stringify(json), {
-    status: 200,
-    statusText: resp.statusText,
-    headers: resp.headers,
-  });
-}
-async function sendMessageToTelegramFallback(json, message, token, context) {
-  if (json.description === 'Bad Request: replied message not found') {
-    delete context.reply_to_message_id;
-    return sendMessageToTelegram(message, token, context);
-  }
-  return new Response(JSON.stringify(json), {status: 200});
 }
 
-// 发送聊天动作到TG
-export async function sendChatActionToTelegram(action, token) {
+
+/**
+ *
+ * @param {string} message
+ * @param {string} token
+ * @param {object} context
+ * @return {Promise<Response>}
+ */
+export async function sendMessageToTelegram(message, token, context) {
+  const chatContext = context;
+  if (message.length<=4096) {
+    const resp = await sendMessage(message, token, chatContext);
+    if (resp.status === 200) {
+      return resp;
+    } else {
+      chatContext.parse_mode = null;
+      return await sendMessage(message, token, chatContext);
+    }
+  }
+  const limit = 4096;
+  chatContext.parse_mode = null;
+  for (let i = 0; i < message.length; i += limit) {
+    const msg = message.slice(i, Math.min(i + limit, message.length));
+    await sendMessage(msg, token, chatContext);
+  }
+  return new Response('Message batch send', {status: 200});
+}
+
+/**
+ *
+ * @param {Context} context
+ * @return {function(string): Promise<Response>}
+ */
+export function sendMessageToTelegramWithContext(context) {
+  return async (message) => {
+    return sendMessageToTelegram(message, context.SHARE_CONTEXT.currentBotToken, context.CURRENT_CHAT_CONTEXT);
+  };
+}
+
+/**
+ *
+ * @param {Context} context
+ * @return {function(string): Promise<Response>}
+ */
+export function deleteMessageFromTelegramWithContext(context) {
+  return async (messageId) => {
+    return await fetch(
+        `${ENV.TELEGRAM_API_DOMAIN}/bot${context.SHARE_CONTEXT.currentBotToken}/deleteMessage`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chat_id: context.CURRENT_CHAT_CONTEXT.chat_id,
+            message_id: messageId,
+          }),
+        },
+    );
+  };
+}
+
+
+/**
+ * 发送图片消息到Telegram
+ *
+ * @param {string} url
+ * @param {string} token
+ * @param {object} context
+ * @return {Promise<Response>}
+ */
+export async function sendPhotoToTelegram(url, token, context) {
+  const body = {
+    photo: url,
+  };
+  for (const key of Object.keys(context)) {
+    if (context[key] !== undefined && context[key] !== null) {
+      body[key] = context[key];
+    }
+  }
   return await fetch(
-      `https://api.telegram.org/bot${token || SHARE_CONTEXT.currentBotToken}/sendChatAction`,
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/sendPhoto`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+  );
+}
+
+/**
+ *
+ * @param {Context} context
+ * @return {function(string): Promise<Response>}
+ */
+export function sendPhotoToTelegramWithContext(context) {
+  return (url) => {
+    return sendPhotoToTelegram(url, context.SHARE_CONTEXT.currentBotToken, context.CURRENT_CHAT_CONTEXT);
+  };
+}
+
+
+/**
+ * 发送聊天动作到TG
+ *
+ * @param {string} action
+ * @param {string} token
+ * @param {string | number} chatId
+ *
+ * @return {Promise<Response>}
+ */
+export async function sendChatActionToTelegram(action, token, chatId) {
+  return await fetch(
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/sendChatAction`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          chat_id: CURRENT_CHAT_CONTEXT.chat_id,
+          chat_id: chatId,
           action: action,
         }),
       },
   ).then((res) => res.json());
 }
 
+/**
+ *
+ * @param {Context} context
+ * @return {function(string): Promise<Response>}
+ */
+export function sendChatActionToTelegramWithContext(context) {
+  return (action) => {
+    return sendChatActionToTelegram(action, context.SHARE_CONTEXT.currentBotToken, context.CURRENT_CHAT_CONTEXT.chat_id);
+  };
+}
+
+/**
+ *
+ * @param {string} token
+ * @param {string} url
+ * @return {Promise<Response>}
+ */
 export async function bindTelegramWebHook(token, url) {
   return await fetch(
-      `https://api.telegram.org/bot${token}/setWebhook`,
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/setWebhook`,
       {
         method: 'POST',
         headers: {
@@ -67,27 +196,33 @@ export async function bindTelegramWebHook(token, url) {
 }
 
 // 判断是否为群组管理员
-export async function getChatRole(id) {
+/**
+ *
+ * @param {string | number} id
+ * @param {string} groupAdminKey
+ * @param {string | number} chatId
+ * @param {string} token
+ * @return {Promise<string>}
+ */
+export async function getChatRole(id, groupAdminKey, chatId, token) {
   let groupAdmin;
   try {
-    groupAdmin = await DATABASE.get(SHARE_CONTEXT.groupAdminKey).then((res) =>
-      JSON.parse(res),
-    );
+    groupAdmin = JSON.parse(await DATABASE.get(groupAdminKey));
   } catch (e) {
     console.error(e);
     return e.message;
   }
   if (!groupAdmin || !Array.isArray(groupAdmin) || groupAdmin.length === 0) {
-    const administers = await getChatAdminister(CURRENT_CHAT_CONTEXT.chat_id);
+    const administers = await getChatAdminister(chatId, token);
     if (administers == null) {
       return null;
     }
     groupAdmin = administers;
     // 缓存120s
     await DATABASE.put(
-        SHARE_CONTEXT.groupAdminKey,
+        groupAdminKey,
         JSON.stringify(groupAdmin),
-        {expiration: parseInt(Date.now() / 1000) + 120},
+        {expiration: (Date.now() / 1000) + 120},
     );
   }
   for (let i = 0; i < groupAdmin.length; i++) {
@@ -99,12 +234,28 @@ export async function getChatRole(id) {
   return 'member';
 }
 
-// 获取群组管理员信息
+/**
+ * @param {Context} context
+ * @return {function(*): Promise<string>}
+ */
+export function getChatRoleWithContext(context) {
+  return (id) => {
+    return getChatRole(id, context.SHARE_CONTEXT.groupAdminKey, context.CURRENT_CHAT_CONTEXT.chat_id, context.SHARE_CONTEXT.currentBotToken);
+  };
+}
+
+/**
+ * 获取群组管理员信息
+ *
+ * @param {string | number} chatId
+ * @param {string} token
+ * @return {Promise<object>}
+ */
 export async function getChatAdminister(chatId, token) {
   try {
     const resp = await fetch(
-        `https://api.telegram.org/bot${
-          token || SHARE_CONTEXT.currentBotToken
+        `${ENV.TELEGRAM_API_DOMAIN}/bot${
+          token
         }/getChatAdministrators`,
         {
           method: 'POST',
@@ -124,9 +275,14 @@ export async function getChatAdminister(chatId, token) {
 }
 
 // 获取机器人信息
+/**
+ *
+ * @param {string} token
+ * @return {Promise<object>}
+ */
 export async function getBot(token) {
   const resp = await fetch(
-      `https://api.telegram.org/bot${token}/getMe`,
+      `${ENV.TELEGRAM_API_DOMAIN}/bot${token}/getMe`,
       {
         method: 'POST',
         headers: {

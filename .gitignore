@@ -146,4 +146,5 @@ out
 .idea
 .vscode
 /wrangler.toml
-/test/test-env.js
+/wrangler-test.toml
+.vercel
